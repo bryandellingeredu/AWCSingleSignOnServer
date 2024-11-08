@@ -1,11 +1,9 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 using OpenIddict.Abstractions;
-using OpenIddict.EntityFrameworkCore.Models;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using OpenIddict.Server.AspNetCore;
 using SSO2;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
@@ -84,15 +82,13 @@ builder.Services.AddAuthentication(options =>
     aadOptions.SkipUnrecognizedRequests = false;
 });
 
-// Step 4: Add CORS policy
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowLocalhost3000", builder =>
+    options.AddPolicy("AllowAnyOrigin", builder =>
     {
-        builder.WithOrigins("http://localhost:3000")
-                .WithHeaders("Authorization", "Content-Type")
-               .AllowAnyMethod()    
-               .AllowCredentials();
+        builder.AllowAnyOrigin()
+               .AllowAnyHeader()
+               .AllowAnyMethod();
     });
 });
 
@@ -101,10 +97,7 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-app.UseCors("AllowLocalhost3000");
-
-
-
+app.UseCors("AllowAnyOrigin");
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -130,10 +123,10 @@ app.MapGet("/login", async (HttpContext context) =>
 app.MapGet("/login/army", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
-
+    var callbackUri = $"{context.Request.Scheme}://{context.Request.Host}/connect/callback";
     await context.ChallengeAsync("aad", new AuthenticationProperties
     {
-        RedirectUri = "https://localhost:7274/connect/callback",
+        RedirectUri = callbackUri,
         Items = { { "redirect_uri", clientRedirectUri } }
     });
 });
@@ -169,10 +162,12 @@ app.MapGet("/connect/callback", async (HttpContext context) =>
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
 
+        var JWTSettingsConfig = builder.Configuration.GetSection("JWTSettings");
+
         // JWT settings
-        var issuer = "https://localhost:7274";
+        var issuer = $"{context.Request.Scheme}://{context.Request.Host}";
         var audience = "resource-server-1";
-        var secretKey = "YourSuperSecureRandomSecretKey123!";
+        var secretKey = JWTSettingsConfig["SecretKey"];
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var expires = DateTime.UtcNow.AddMinutes(30);
