@@ -56,30 +56,43 @@ builder.Services.AddOpenIddict()
         options.UseAspNetCore();
     });
 
+// Load configuration for Army and EDU Azure AD
 var armyAzureAdConfig = builder.Configuration.GetSection("ArmyAzureAd");
+var eduAzureAdConfig = builder.Configuration.GetSection("EduAzureAd");
 
 // Step 3: Configure Azure AD as an external provider
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = "aad";
 })
 .AddCookie(options =>
 {
     options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
     options.Cookie.SameSite = SameSiteMode.None;
 })
-.AddOpenIdConnect("aad", aadOptions =>
+.AddOpenIdConnect("army", armyOptions =>
 {
-    aadOptions.ClientId = armyAzureAdConfig["ClientId"];
-    aadOptions.ClientSecret = armyAzureAdConfig["ClientSecret"];
-    aadOptions.Authority = armyAzureAdConfig["Authority"];
-    aadOptions.ResponseType = OpenIdConnectResponseType.Code;
-    aadOptions.SaveTokens = true;
-    aadOptions.Scope.Add("openid");
-    aadOptions.Scope.Add("profile");
-    aadOptions.Scope.Add("email");
-    aadOptions.SkipUnrecognizedRequests = false;
+    armyOptions.ClientId = armyAzureAdConfig["ClientId"];
+    armyOptions.ClientSecret = armyAzureAdConfig["ClientSecret"];
+    armyOptions.Authority = armyAzureAdConfig["Authority"];
+    armyOptions.ResponseType = OpenIdConnectResponseType.Code;
+    armyOptions.SaveTokens = true;
+    armyOptions.Scope.Add("openid");
+    armyOptions.Scope.Add("profile");
+    armyOptions.Scope.Add("email");
+    armyOptions.SkipUnrecognizedRequests = false;
+})
+.AddOpenIdConnect("edu", eduOptions =>
+{
+    eduOptions.ClientId = eduAzureAdConfig["ClientId"];
+    eduOptions.ClientSecret = eduAzureAdConfig["ClientSecret"];
+    eduOptions.Authority = eduAzureAdConfig["Authority"];
+    eduOptions.ResponseType = OpenIdConnectResponseType.Code;
+    eduOptions.SaveTokens = true;
+    eduOptions.Scope.Add("openid");
+    eduOptions.Scope.Add("profile");
+    eduOptions.Scope.Add("email");
+    eduOptions.SkipUnrecognizedRequests = false;
 });
 
 builder.Services.AddCors(options =>
@@ -103,20 +116,21 @@ app.UseAuthorization();
 
 await OpenIddictSeeder.SeedAsync(app.Services);
 
+// Login Page with Army and EDU buttons
 app.MapGet("/login", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
     context.Response.ContentType = "text/html";
-    await context.Response.WriteAsync($@"
+    await context.Response.WriteAsync($"""
         <html>
             <body>
                 <h1>Army War College Single Sign-On Server</h1>
-                <button onclick=""location.href='/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>
-                <button onclick=""location.href='/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>
+                <button onclick="location.href='/login/army?redirect_uri={clientRedirectUri}'">Log on Army</button>
+                <button onclick="location.href='/login/edu?redirect_uri={clientRedirectUri}'">Log on EDU</button>
             </body>
         </html>
-    ");
+    """);
 });
 
 // Army Login Endpoint
@@ -124,20 +138,23 @@ app.MapGet("/login/army", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
     var callbackUri = $"{context.Request.Scheme}://{context.Request.Host}/connect/callback";
-    await context.ChallengeAsync("aad", new AuthenticationProperties
+    await context.ChallengeAsync("army", new AuthenticationProperties
     {
         RedirectUri = callbackUri,
         Items = { { "redirect_uri", clientRedirectUri } }
     });
 });
 
-// EDU Login Endpoint (currently inactive)
+// EDU Login Endpoint
 app.MapGet("/login/edu", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
-
-    // Placeholder for EDU-specific logic
-    await context.Response.WriteAsync($"EDU login is currently inactive. Intended redirect: {clientRedirectUri}");
+    var callbackUri = $"{context.Request.Scheme}://{context.Request.Host}/connect/callback";
+    await context.ChallengeAsync("edu", new AuthenticationProperties
+    {
+        RedirectUri = callbackUri,
+        Items = { { "redirect_uri", clientRedirectUri } }
+    });
 });
 
 // Callback Endpoint to Handle Azure AD's Response and Issue Token
@@ -198,5 +215,3 @@ app.MapGet("/connect/callback", async (HttpContext context) =>
 });
 
 app.Run();
-
-

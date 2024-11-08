@@ -53,7 +53,7 @@
                 {
                     ClientId = "new-client-id",
                     DisplayName = "React Client",
-                    RedirectUris = { new Uri("http://localhost:3000/callback") },
+                  //  RedirectUris = { new Uri("http://localhost:3000/callback") },
                     Permissions =
                 {
                     OpenIddictConstants.Permissions.Endpoints.Authorization,
