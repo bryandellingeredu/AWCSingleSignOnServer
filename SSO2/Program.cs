@@ -100,6 +100,39 @@ app.UseAuthorization();
 app.MapGet("/login", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
+    var buttonsQuery = context.Request.Query["buttons"].ToString();
+
+    var buttonsToDisplay = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    if (!string.IsNullOrEmpty(buttonsQuery))
+    {
+        var buttonsArray = buttonsQuery.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var button in buttonsArray)
+        {
+            buttonsToDisplay.Add(button.Trim().ToLower()); // Normalize to lowercase
+        }
+    }
+    else
+    {
+        // Default to army and edu if buttonsQuery is empty or missing
+        buttonsToDisplay.Add("army");
+        buttonsToDisplay.Add("edu");
+    }
+
+    var buttonsHtml = new StringBuilder();
+
+    if (buttonsToDisplay.Contains("army"))
+    {
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>");
+    }
+    if (buttonsToDisplay.Contains("edu"))
+    {
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>");
+    }
+    if (buttonsToDisplay.Contains("email"))
+    {
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>");
+    }
 
     context.Response.ContentType = "text/html";
     await context.Response.WriteAsync($@"
@@ -146,9 +179,7 @@ app.MapGet("/login", async (HttpContext context) =>
     <body>
         <h1>Army War College Single Sign-On Server</h1>
         <div class=""button-container"">
-            <button class=""btn"" onclick=""location.href='/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>
-            <button class=""btn"" onclick=""location.href='/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>
-            <button class=""btn"" onclick=""location.href='/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>
+            {buttonsHtml}
         </div>
     </body>
     </html>
