@@ -1,16 +1,13 @@
-using Microsoft.AspNetCore.Authentication.Cookies;
+
 using Microsoft.EntityFrameworkCore;
-using OpenIddict.Client;
-using OpenIddict.Client.WebIntegration;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using SSO2;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using OpenIddict.Client.AspNetCore;
 using OpenIddict.Abstractions;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -151,11 +148,204 @@ app.MapGet("/login", async (HttpContext context) =>
         <div class=""button-container"">
             <button class=""btn"" onclick=""location.href='/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>
             <button class=""btn"" onclick=""location.href='/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>
+            <button class=""btn"" onclick=""location.href='/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>
         </div>
     </body>
     </html>
 ");
 });
+
+app.MapGet("/login/email", async (HttpContext context) =>
+{
+    var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
+
+    context.Response.ContentType = "text/html";
+    await context.Response.WriteAsync($@"
+        <!DOCTYPE html>
+        <html lang=""en"">
+        <head>
+            <meta charset=""UTF-8"">
+            <title>Email Login</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    background-color: #f0f2f5;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                }}
+                h1 {{
+                    color: #333;
+                }}
+                .form-container {{
+                    margin-top: 20px;
+                }}
+                .input-field {{
+                    padding: 10px;
+                    font-size: 16px;
+                    margin-bottom: 10px;
+                }}
+                .btn {{
+                    padding: 10px 20px;
+                    font-size: 16px;
+                    background-color: #007bff;
+                    color: #fff;
+                    border: none;
+                    border-radius: 5px;
+                    cursor: pointer;
+                }}
+                .btn:hover {{
+                    background-color: #0056b3;
+                }}
+            </style>
+        </head>
+        <body>
+            <h1>Email Login</h1>
+            <div class=""form-container"">
+                <form method=""post"" action=""/login/email?redirect_uri={clientRedirectUri}"">
+                    <input type=""email"" name=""email"" placeholder=""Enter your email"" class=""input-field"" required />
+                    <input type=""submit"" value=""Submit"" class=""btn"" />
+                </form>
+            </div>
+        </body>
+        </html>
+    ");
+});
+
+app.MapPost("/login/email", async (HttpContext context) =>
+{
+    var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
+
+    // Get the email from the form
+    var form = await context.Request.ReadFormAsync();
+    var email = form["email"].ToString();
+
+    if (string.IsNullOrEmpty(email))
+    {
+        context.Response.ContentType = "text/html";
+        await context.Response.WriteAsync("Please provide a valid email address.");
+        return;
+    }
+
+    // Generate JWT token
+    var claims = new List<Claim>
+    {
+        new Claim(JwtRegisteredClaimNames.Sub, email),
+        new Claim(JwtRegisteredClaimNames.Email, email),
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+    };
+
+    var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
+    var JWTSettingsConfig = configuration.GetSection("JWTSettings");
+
+    // JWT settings
+    var issuer = $"{context.Request.Scheme}://{context.Request.Host}";
+    var audience = "resource-server-1";
+    var secretKey = JWTSettingsConfig["SecretKey"];
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+    var expires = DateTime.UtcNow.AddMinutes(30);
+
+    // Create the JWT token
+    var token = new JwtSecurityToken(
+        issuer,
+        audience,
+        claims,
+        expires: expires,
+        signingCredentials: creds
+    );
+
+    var tokenHandler = new JwtSecurityTokenHandler();
+    var tokenString = tokenHandler.WriteToken(token);
+
+    // Create the email content
+    var redirectUri = $"{clientRedirectUri}?token={tokenString}";
+
+    var emailContent = $@"
+        <p>Please click the link below to complete your login:</p>
+        <p><a href=""{redirectUri}"">{redirectUri}</a></p>
+    ";
+
+    // Prepare the email request
+    var emailRequest = new
+    {
+        recipients = new[] { email },
+        subject = "Your Login Link",
+        body = emailContent
+    };
+
+    // Serialize the email request to JSON
+    var jsonContent = JsonSerializer.Serialize(emailRequest);
+
+    using var httpClient = new HttpClient();
+
+    // Add the X-API-KEY header
+    httpClient.DefaultRequestHeaders.Add("X-API-KEY", "DthdAd-JGC3XdvHOctzG6WTf7p6-eeJtXcqN4i8w7Yc");
+
+    // Send the email via POST request
+    var response = await httpClient.PostAsync(
+        "https://apps.armywarcollege.edu/registration/api/SendEmail",
+        new StringContent(jsonContent, Encoding.UTF8, "application/json")
+    );
+
+    if (response.IsSuccessStatusCode)
+    {
+        context.Response.ContentType = "text/html";
+        await context.Response.WriteAsync("An email has been sent to your address with the login link.");
+    }
+    else
+    {
+        context.Response.ContentType = "text/html";
+        await context.Response.WriteAsync("Failed to send email. Please try again later.");
+    }
+});
+
+app.MapGet("/callback/login/email", async (HttpContext context) =>
+{
+    var token = context.Request.Query["token"].ToString();
+    var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
+
+    if (string.IsNullOrEmpty(token))
+    {
+        await context.Response.WriteAsync("Invalid token.");
+        return;
+    }
+
+    var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
+    var JWTSettingsConfig = configuration.GetSection("JWTSettings");
+
+    var secretKey = JWTSettingsConfig["SecretKey"];
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+
+    var tokenHandler = new JwtSecurityTokenHandler();
+
+    try
+    {
+        var principal = tokenHandler.ValidateToken(token, new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = $"{context.Request.Scheme}://{context.Request.Host}",
+            ValidateAudience = true,
+            ValidAudience = "resource-server-1",
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = key,
+            ValidateLifetime = true
+        }, out SecurityToken validatedToken);
+
+        // Redirect to the client with the token in the query string
+        var redirectUri = $"{clientRedirectUri}?token={token}";
+        context.Response.Redirect(redirectUri);
+    }
+    catch (Exception)
+    {
+        await context.Response.WriteAsync("Invalid or expired token.");
+    }
+});
+
+
 
 // Army Login Endpoint
 app.MapGet("/login/army", async (HttpContext context) =>
