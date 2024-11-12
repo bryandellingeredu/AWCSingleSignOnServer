@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
-using OpenIddict.Abstractions;
+using OpenIddict.Client;
+using OpenIddict.Client.WebIntegration;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -8,6 +9,8 @@ using SSO2;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
+using OpenIddict.Client.AspNetCore;
+using OpenIddict.Abstractions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,7 +28,6 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseOpenIddict();
 });
 
-// Step 2: Configure OpenIddict as the authorization server
 builder.Services.AddOpenIddict()
     .AddCore(options =>
     {
@@ -33,67 +35,50 @@ builder.Services.AddOpenIddict()
     })
     .AddServer(options =>
     {
+        options.AllowAuthorizationCodeFlow();
+
         options.SetAuthorizationEndpointUris("/connect/authorize")
                .SetTokenEndpointUris("/connect/token");
 
-        options.AllowAuthorizationCodeFlow()
-               .RequireProofKeyForCodeExchange();
+        options.RegisterScopes(OpenIddictConstants.Scopes.OpenId, "api");
 
-        options.RegisterScopes(OpenIddictConstants.Scopes.OpenId,
-                               OpenIddictConstants.Scopes.Profile,
-                               OpenIddictConstants.Scopes.Email);
-
-        options.AddDevelopmentEncryptionCertificate()
-               .AddDevelopmentSigningCertificate();
+        options.AddEphemeralSigningKey();
+        options.AddEphemeralEncryptionKey();
 
         options.UseAspNetCore()
                .EnableAuthorizationEndpointPassthrough()
                .EnableTokenEndpointPassthrough();
     })
-    .AddValidation(options =>
+    .AddClient(options =>
     {
-        options.UseLocalServer();
-        options.UseAspNetCore();
+        // Add an ephemeral encryption key
+        options.AddEphemeralEncryptionKey();
+        options.AddEphemeralSigningKey();
+
+        options.UseWebProviders()
+            .AddMicrosoft(armyOptions =>
+            {
+                armyOptions.SetClientId(builder.Configuration["ArmyAzureAd:ClientId"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientId is not configured."))
+                           .SetClientSecret(builder.Configuration["ArmyAzureAd:ClientSecret"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientSecret is not configured."))
+                           .SetTenant(builder.Configuration["ArmyAzureAd:TenantId"] ?? throw new InvalidOperationException("ArmyAzureAd:TenantId is not configured."))
+                           .SetRedirectUri("/callback/login/army")
+                           .SetProviderName("Army"); // Set the provider name here
+            })
+            .AddMicrosoft(eduOptions =>
+            {
+                eduOptions.SetClientId(builder.Configuration["EDUAzureAd:ClientId"] ?? throw new InvalidOperationException("EDUAzureAd:ClientId is not configured."))
+                          .SetClientSecret(builder.Configuration["EDUAzureAd:ClientSecret"] ?? throw new InvalidOperationException("EDUAzureAd:ClientSecret is not configured."))
+                          .SetTenant(builder.Configuration["EDUAzureAd:TenantId"] ?? throw new InvalidOperationException("EDUAzureAd:TenantId is not configured."))
+                          .SetRedirectUri("/callback/login/edu")
+                          .SetProviderName("EDU"); // Set the provider name here
+            });
+
+        options.AllowAuthorizationCodeFlow();
+
+        options.UseAspNetCore()
+               .EnableRedirectionEndpointPassthrough()
+               .EnablePostLogoutRedirectionEndpointPassthrough();
     });
-
-// Load configuration for Army and EDU Azure AD
-var armyAzureAdConfig = builder.Configuration.GetSection("ArmyAzureAd");
-var eduAzureAdConfig = builder.Configuration.GetSection("EduAzureAd");
-
-// Step 3: Configure Azure AD as an external provider
-builder.Services.AddAuthentication(options =>
-{
-    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-})
-.AddCookie(options =>
-{
-    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-    options.Cookie.SameSite = SameSiteMode.None;
-})
-.AddOpenIdConnect("army", armyOptions =>
-{
-    armyOptions.ClientId = armyAzureAdConfig["ClientId"];
-    armyOptions.ClientSecret = armyAzureAdConfig["ClientSecret"];
-    armyOptions.Authority = armyAzureAdConfig["Authority"];
-    armyOptions.ResponseType = OpenIdConnectResponseType.Code;
-    armyOptions.SaveTokens = true;
-    armyOptions.Scope.Add("openid");
-    armyOptions.Scope.Add("profile");
-    armyOptions.Scope.Add("email");
-    armyOptions.SkipUnrecognizedRequests = false;
-})
-.AddOpenIdConnect("edu", eduOptions =>
-{
-    eduOptions.ClientId = eduAzureAdConfig["ClientId"];
-    eduOptions.ClientSecret = eduAzureAdConfig["ClientSecret"];
-    eduOptions.Authority = eduAzureAdConfig["Authority"];
-    eduOptions.ResponseType = OpenIdConnectResponseType.Code;
-    eduOptions.SaveTokens = true;
-    eduOptions.Scope.Add("openid");
-    eduOptions.Scope.Add("profile");
-    eduOptions.Scope.Add("email");
-    eduOptions.SkipUnrecognizedRequests = false;
-});
 
 builder.Services.AddCors(options =>
 {
@@ -114,53 +99,98 @@ app.UseCors("AllowAnyOrigin");
 app.UseAuthentication();
 app.UseAuthorization();
 
-await OpenIddictSeeder.SeedAsync(app.Services);
-
 // Login Page with Army and EDU buttons
 app.MapGet("/login", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
     context.Response.ContentType = "text/html";
-    await context.Response.WriteAsync($"""
-        <html>
-            <body>
-                <h1>Army War College Single Sign-On Server</h1>
-                <button onclick="location.href='/login/army?redirect_uri={clientRedirectUri}'">Log on Army</button>
-                <button onclick="location.href='/login/edu?redirect_uri={clientRedirectUri}'">Log on EDU</button>
-            </body>
-        </html>
-    """);
+    await context.Response.WriteAsync($@"
+    <!DOCTYPE html>
+    <html lang=""en"">
+    <head>
+        <meta charset=""UTF-8"">
+        <title>ARMY WAR COLLEGE SINGLE SIGN ON SERVER</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background-color: #f0f2f5;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+            }}
+            h1 {{
+                color: #333;
+            }}
+            .button-container {{
+                margin-top: 20px;
+            }}
+            .btn {{
+                display: inline-block;
+                padding: 12px 24px;
+                margin: 10px;
+                font-size: 16px;
+                text-decoration: none;
+                color: #fff;
+                background-color: #007bff;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                transition: background-color 0.3s ease;
+            }}
+            .btn:hover {{
+                background-color: #0056b3;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>Army War College Single Sign-On Server</h1>
+        <div class=""button-container"">
+            <button class=""btn"" onclick=""location.href='/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>
+            <button class=""btn"" onclick=""location.href='/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>
+        </div>
+    </body>
+    </html>
+");
 });
 
 // Army Login Endpoint
 app.MapGet("/login/army", async (HttpContext context) =>
 {
-    var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
-    var callbackUri = $"{context.Request.Scheme}://{context.Request.Host}/connect/callback";
-    await context.ChallengeAsync("army", new AuthenticationProperties
+    var properties = new AuthenticationProperties(new Dictionary<string, string>
     {
-        RedirectUri = callbackUri,
-        Items = { { "redirect_uri", clientRedirectUri } }
-    });
+        [OpenIddictClientAspNetCoreConstants.Properties.ProviderName] = "Army",
+        ["redirect_uri"] = context.Request.Query["redirect_uri"]
+    })
+    {
+        RedirectUri = "/callback/login/army"
+    };
+
+    await context.ChallengeAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme, properties);
 });
 
 // EDU Login Endpoint
 app.MapGet("/login/edu", async (HttpContext context) =>
 {
-    var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
-    var callbackUri = $"{context.Request.Scheme}://{context.Request.Host}/connect/callback";
-    await context.ChallengeAsync("edu", new AuthenticationProperties
+    var properties = new AuthenticationProperties(new Dictionary<string, string>
     {
-        RedirectUri = callbackUri,
-        Items = { { "redirect_uri", clientRedirectUri } }
-    });
+        [OpenIddictClientAspNetCoreConstants.Properties.ProviderName] = "EDU",
+        ["redirect_uri"] = context.Request.Query["redirect_uri"]
+    })
+    {
+        RedirectUri = "/callback/login/edu"
+    };
+
+    await context.ChallengeAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme, properties);
 });
 
 // Callback Endpoint to Handle Azure AD's Response and Issue Token
-app.MapGet("/connect/callback", async (HttpContext context) =>
+app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
 {
-    var result = await context.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+    var result = await context.AuthenticateAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme);
     if (result.Succeeded)
     {
         var email = result.Principal.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
