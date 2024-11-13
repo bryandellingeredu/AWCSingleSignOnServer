@@ -8,6 +8,7 @@ using System.Text;
 using OpenIddict.Client.AspNetCore;
 using OpenIddict.Abstractions;
 using System.Text.Json;
+using static OpenIddict.Client.WebIntegration.OpenIddictClientWebIntegrationConstants;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -68,7 +69,16 @@ builder.Services.AddOpenIddict()
                           .SetTenant(builder.Configuration["EDUAzureAd:TenantId"] ?? throw new InvalidOperationException("EDUAzureAd:TenantId is not configured."))
                           .SetRedirectUri("/callback/login/edu")
                           .SetProviderName("EDU"); // Set the provider name here
-            });
+            })
+           .AddGoogle(googleOptions =>
+           {
+               googleOptions.SetClientId(builder.Configuration["Google:ClientId"] ?? throw new InvalidOperationException("Google:ClientId is not configured."))
+                       .SetClientSecret(builder.Configuration["Google:ClientSecret"] ?? throw new InvalidOperationException("Google:ClientSecret is not configured."))
+                       .SetRedirectUri("/callback/login/google")
+                       .SetProviderName("Google");
+               googleOptions.AddScopes("email");
+               googleOptions.AddScopes("profile");
+           });
 
         options.AllowAuthorizationCodeFlow();
 
@@ -132,6 +142,10 @@ app.MapGet("/login", async (HttpContext context) =>
     if (buttonsToDisplay.Contains("email"))
     {
         buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>");
+    }
+    if (buttonsToDisplay.Contains("google"))
+    {
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/google?redirect_uri={clientRedirectUri}'"">Log on with Google</button>");
     }
 
     context.Response.ContentType = "text/html";
@@ -246,7 +260,7 @@ app.MapGet("/login/email", async (HttpContext context) =>
     ");
 });
 
-app.MapPost("/login/email", async (HttpContext context) =>
+app.MapPost("/login ", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
@@ -266,7 +280,8 @@ app.MapPost("/login/email", async (HttpContext context) =>
     {
         new Claim(JwtRegisteredClaimNames.Sub, email),
         new Claim(JwtRegisteredClaimNames.Email, email),
-        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+        new Claim("custom:loggedInUsing", "email")
     };
 
     var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
@@ -332,6 +347,20 @@ app.MapPost("/login/email", async (HttpContext context) =>
         context.Response.ContentType = "text/html";
         await context.Response.WriteAsync("Failed to send email. Please try again later.");
     }
+});
+
+app.MapGet("/login/google", async (HttpContext context) =>
+{
+    var properties = new AuthenticationProperties(new Dictionary<string, string>
+    {
+        [OpenIddictClientAspNetCoreConstants.Properties.ProviderName] = "Google",
+        ["redirect_uri"] = context.Request.Query["redirect_uri"]
+    })
+    {
+        RedirectUri = "/callback/login/google"
+    };
+
+    await context.ChallengeAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme, properties);
 });
 
 app.MapGet("/callback/login/email", async (HttpContext context) =>
@@ -414,7 +443,19 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
     var result = await context.AuthenticateAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme);
     if (result.Succeeded)
     {
-        var email = result.Principal.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
+        var provider = context.Request.RouteValues["provider"]?.ToString()?.ToLower();
+        string email;
+        if (provider == "google")
+        {
+            // Google-specific claim for email
+            email = result.Principal.FindFirstValue("email") ??
+                    result.Principal.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
+        }
+        else
+        {
+            // Standard claim for email
+            email = result.Principal.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
+        }
 
         if (email == null)
         {
@@ -422,12 +463,14 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
             return;
         }
 
+
         // Define claims for the JWT token
         var claims = new List<Claim>
         {
             new Claim(JwtRegisteredClaimNames.Sub, email),
             new Claim(JwtRegisteredClaimNames.Email, email),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new Claim("custom:loggedInUsing", provider)
         };
 
         var JWTSettingsConfig = builder.Configuration.GetSection("JWTSettings");
