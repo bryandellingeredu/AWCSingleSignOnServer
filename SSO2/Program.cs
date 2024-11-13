@@ -260,7 +260,7 @@ app.MapGet("/login/email", async (HttpContext context) =>
     ");
 });
 
-app.MapPost("/login ", async (HttpContext context) =>
+app.MapPost("/login/email", async (HttpContext context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
