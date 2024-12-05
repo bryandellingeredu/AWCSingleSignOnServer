@@ -8,7 +8,9 @@ using System.Text;
 using OpenIddict.Client.AspNetCore;
 using OpenIddict.Abstractions;
 using System.Text.Json;
-using static OpenIddict.Client.WebIntegration.OpenIddictClientWebIntegrationConstants;
+using SSO2;
+using Azure.Core;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -89,11 +91,12 @@ builder.Services.AddOpenIddict()
 
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAnyOrigin", builder =>
+    options.AddPolicy("CorsPolicy", policy =>
     {
-        builder.AllowAnyOrigin()
-               .AllowAnyHeader()
-               .AllowAnyMethod();
+        policy.WithOrigins("https://localhost:3000") // Specify the allowed origin
+              .AllowAnyHeader() // Allow all headers
+              .AllowAnyMethod() // Allow all HTTP methods
+              .AllowCredentials(); // Allow cookies or credentials
     });
 });
 
@@ -102,7 +105,7 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-app.UseCors("AllowAnyOrigin");
+app.UseCors("CorsPolicy");
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -260,7 +263,91 @@ app.MapGet("/login/email", async (HttpContext context) =>
     ");
 });
 
-app.MapPost("/login/email", async (HttpContext context) =>
+app.MapGet("/setrefreshtoken", async (HttpContext context, ApplicationDbContext _context) =>
+{
+    // Retrieve the refresh token from cookies
+    var refreshToken = context.Request.Cookies["refreshToken"];
+    if (string.IsNullOrEmpty(refreshToken))
+    {
+        context.Response.StatusCode = 401;
+        await context.Response.WriteAsync("Unauthorized: Missing refresh token.");
+        return;
+    }
+
+    // Locate the refresh token in the database
+    var appUser = _context.AppUsers.Include(r => r.RefreshTokens)
+        .FirstOrDefault(u => u.RefreshTokens.Any(rt => rt.Token == refreshToken));
+
+    if (appUser == null)
+    {
+        context.Response.StatusCode = 401;
+        await context.Response.WriteAsync("Unauthorized: Invalid refresh token.");
+        return;
+    }
+
+    var oldRefreshToken = appUser.RefreshTokens.SingleOrDefault(rt => rt.Token == refreshToken);
+
+    // Check if the refresh token is active
+    if (oldRefreshToken == null || !oldRefreshToken.IsActive)
+    {
+        context.Response.StatusCode = 401;
+        await context.Response.WriteAsync("Unauthorized: Expired or /d refresh token.");
+        return;
+    }
+
+    // Revoke the old refresh token
+    oldRefreshToken.Revoked = DateTime.UtcNow;
+
+    // Generate a new refresh token
+    var newRefreshToken = UtilityClass.GenerateRefreshToken();
+    appUser.RefreshTokens.Add(newRefreshToken);
+    await _context.SaveChangesAsync();
+
+    // Set the new refresh token as a secure, HttpOnly cookie
+    var cookieOptions = new CookieOptions
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.None,
+        Expires = DateTime.UtcNow.AddDays(7)
+    };
+    context.Response.Cookies.Append("refreshToken", newRefreshToken.Token, cookieOptions);
+
+    // Generate a new access token
+    var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
+    var jwtSettingsConfig = configuration.GetSection("JWTSettings");
+    var secretKey = jwtSettingsConfig["SecretKey"];
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+
+    var claims = new List<Claim>
+    {
+        new Claim(JwtRegisteredClaimNames.Sub, appUser.Email),
+        new Claim(JwtRegisteredClaimNames.Email, appUser.Email),
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+        new Claim("custom:loggedInUsing", appUser.LoggedInUsing) // Custom claim
+    };
+
+    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+    var issuer = $"{context.Request.Scheme}://{context.Request.Host}";
+    var audience = "resource-server-1";
+
+    var jwtToken = new JwtSecurityToken(
+        issuer: issuer,
+        audience: audience,
+        claims: claims,
+        expires: DateTime.UtcNow.AddMinutes(60), // Short-lived access token
+        signingCredentials: creds
+    );
+
+    var tokenString = new JwtSecurityTokenHandler().WriteToken(jwtToken);
+
+    // Return the new access token
+    var response = new { token = tokenString };
+    context.Response.ContentType = "application/json";
+    await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+});
+
+app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _context) =>
 {
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
@@ -284,6 +371,24 @@ app.MapPost("/login/email", async (HttpContext context) =>
         new Claim("custom:loggedInUsing", "email")
     };
 
+    AppUser appUser = _context.AppUsers
+   .Where(x => x.Email == email && x.LoggedInUsing == "email")
+   .FirstOrDefault();
+
+    if (appUser == null)
+    {
+        AppUser newAppUser = new AppUser
+        {
+            Email = email,
+            LoggedInUsing = "email"
+        };
+        _context.AppUsers.Add(newAppUser);
+        _context.SaveChanges();
+    }
+
+
+
+
     var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
     var JWTSettingsConfig = configuration.GetSection("JWTSettings");
 
@@ -293,7 +398,7 @@ app.MapPost("/login/email", async (HttpContext context) =>
     var secretKey = JWTSettingsConfig["SecretKey"];
     var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
     var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-    var expires = DateTime.UtcNow.AddMinutes(30);
+    var expires = DateTime.UtcNow.AddMinutes(60);
 
     // Create the JWT token
     var token = new JwtSecurityToken(
@@ -308,7 +413,8 @@ app.MapPost("/login/email", async (HttpContext context) =>
     var tokenString = tokenHandler.WriteToken(token);
 
     // Create the email content
-    var redirectUri = $"{clientRedirectUri}?token={tokenString}";
+    var serverUrl = $"{context.Request.Scheme}://{context.Request.Host}";
+    var redirectUri = $"{serverUrl}/callback/login/email?redirect_uri={clientRedirectUri}&token={tokenString}";
 
     var emailContent = $@"
         <p>Please click the link below to complete your login:</p>
@@ -363,7 +469,7 @@ app.MapGet("/login/google", async (HttpContext context) =>
     await context.ChallengeAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme, properties);
 });
 
-app.MapGet("/callback/login/email", async (HttpContext context) =>
+app.MapGet("/callback/login/email", async (HttpContext context, ApplicationDbContext _context) =>
 {
     var token = context.Request.Query["token"].ToString();
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
@@ -397,6 +503,43 @@ app.MapGet("/callback/login/email", async (HttpContext context) =>
 
         // Redirect to the client with the token in the query string
         var redirectUri = $"{clientRedirectUri}?token={token}";
+
+        var email = principal.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
+        var loggedInUsing = principal.FindFirstValue("custom:loggedInUsing");
+
+        if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(loggedInUsing))
+        {
+            context.Response.StatusCode = 400;
+            await context.Response.WriteAsync("Bad Request: Missing required claims.");
+            return;
+        }
+
+        var appUser = _context.AppUsers.FirstOrDefault(x => x.Email == email && x.LoggedInUsing == loggedInUsing);
+
+        if (appUser == null)
+        {
+            context.Response.StatusCode = 404;
+            await context.Response.WriteAsync("Not Found: User not found.");
+            return;
+        }
+
+        var newRefreshToken = UtilityClass.GenerateRefreshToken();
+        appUser.RefreshTokens.Add(newRefreshToken);
+        await _context.SaveChangesAsync();
+
+
+
+        var cookieOptions = new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            Expires = DateTime.UtcNow.AddDays(7),
+            SameSite = SameSiteMode.None,
+            
+        };
+
+
+        context.Response.Cookies.Append("refreshToken", newRefreshToken.Token, cookieOptions);
         context.Response.Redirect(redirectUri);
     }
     catch (Exception)
@@ -438,7 +581,7 @@ app.MapGet("/login/edu", async (HttpContext context) =>
 });
 
 // Callback Endpoint to Handle Azure AD's Response and Issue Token
-app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
+app.MapGet("/callback/login/{provider}", async (HttpContext context, ApplicationDbContext _context) =>
 {
     var result = await context.AuthenticateAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme);
     if (result.Succeeded)
@@ -473,6 +616,8 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
             new Claim("custom:loggedInUsing", provider)
         };
 
+
+
         var JWTSettingsConfig = builder.Configuration.GetSection("JWTSettings");
 
         // JWT settings
@@ -481,7 +626,7 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
         var secretKey = JWTSettingsConfig["SecretKey"];
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var expires = DateTime.UtcNow.AddMinutes(30);
+        var expires = DateTime.UtcNow.AddMinutes(60);
 
         // Create the JWT token
         var token = new JwtSecurityToken(
@@ -500,6 +645,34 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context) =>
 
         // Redirect to the client with the token in the query string
         var redirectUri = $"{clientRedirectUri}?token={tokenString}";
+
+        AppUser appUser = _context.AppUsers
+        .Where(x => x.Email == email && x.LoggedInUsing == provider)
+        .FirstOrDefault();
+
+        if (appUser == null)
+        {
+            appUser = new AppUser
+            {
+                Email = email,
+                LoggedInUsing = provider
+            };
+            _context.AppUsers.Add(appUser);
+            await _context.SaveChangesAsync();
+        }
+        var newRefreshToken = UtilityClass.GenerateRefreshToken();
+        appUser.RefreshTokens.Add(newRefreshToken);
+        await _context.SaveChangesAsync();
+
+        var cookieOptions = new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.None,
+            Secure = true,
+            Expires = DateTime.UtcNow.AddDays(7)
+        };
+
+        context.Response.Cookies.Append("refreshToken", newRefreshToken.Token, cookieOptions);
         context.Response.Redirect(redirectUri);
     }
     else
