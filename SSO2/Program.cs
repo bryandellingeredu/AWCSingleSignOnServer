@@ -9,7 +9,6 @@ using OpenIddict.Client.AspNetCore;
 using OpenIddict.Abstractions;
 using System.Text.Json;
 using SSO2;
-using Azure.Core;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,6 +26,8 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
     options.UseOpenIddict();
 });
+
+
 
 builder.Services.AddOpenIddict()
     .AddCore(options =>
@@ -61,7 +62,7 @@ builder.Services.AddOpenIddict()
                 armyOptions.SetClientId(builder.Configuration["ArmyAzureAd:ClientId"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientId is not configured."))
                            .SetClientSecret(builder.Configuration["ArmyAzureAd:ClientSecret"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientSecret is not configured."))
                            .SetTenant(builder.Configuration["ArmyAzureAd:TenantId"] ?? throw new InvalidOperationException("ArmyAzureAd:TenantId is not configured."))
-                           .SetRedirectUri("/callback/login/army")
+                           .SetRedirectUri("/SingleSignOn/callback/login/army")
                            .SetProviderName("Army"); // Set the provider name here
             })
             .AddMicrosoft(eduOptions =>
@@ -69,14 +70,14 @@ builder.Services.AddOpenIddict()
                 eduOptions.SetClientId(builder.Configuration["EDUAzureAd:ClientId"] ?? throw new InvalidOperationException("EDUAzureAd:ClientId is not configured."))
                           .SetClientSecret(builder.Configuration["EDUAzureAd:ClientSecret"] ?? throw new InvalidOperationException("EDUAzureAd:ClientSecret is not configured."))
                           .SetTenant(builder.Configuration["EDUAzureAd:TenantId"] ?? throw new InvalidOperationException("EDUAzureAd:TenantId is not configured."))
-                          .SetRedirectUri("/callback/login/edu")
+                          .SetRedirectUri("/SingleSignOn/callback/login/edu")
                           .SetProviderName("EDU"); // Set the provider name here
             })
            .AddGoogle(googleOptions =>
            {
                googleOptions.SetClientId(builder.Configuration["Google:ClientId"] ?? throw new InvalidOperationException("Google:ClientId is not configured."))
                        .SetClientSecret(builder.Configuration["Google:ClientSecret"] ?? throw new InvalidOperationException("Google:ClientSecret is not configured."))
-                       .SetRedirectUri("/callback/login/google")
+                       .SetRedirectUri("/SingleSignOn/callback/login/google")
                        .SetProviderName("Google");
                googleOptions.AddScopes("email");
                googleOptions.AddScopes("profile");
@@ -93,8 +94,12 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("CorsPolicy", policy =>
     {
-        policy.WithOrigins("https://localhost:3000") // Specify the allowed origin
-              .AllowAnyHeader() // Allow all headers
+        policy.WithOrigins(
+               "https://localhost:3000",
+               "https://apps-dev.armywarcollege.edu",
+               "https://apps.armywarcollege.edu"
+           ) // Specify the allowed origin
+             .AllowAnyHeader() // Allow all headers
               .AllowAnyMethod() // Allow all HTTP methods
               .AllowCredentials(); // Allow cookies or credentials
     });
@@ -103,7 +108,10 @@ builder.Services.AddCors(options =>
 // Step 5: Ensure authorization services are added
 builder.Services.AddAuthorization();
 
+
 var app = builder.Build();
+
+app.UsePathBase("/SingleSignOnServer");
 
 app.UseCors("CorsPolicy");
 app.UseAuthentication();
@@ -133,22 +141,23 @@ app.MapGet("/login", async (HttpContext context) =>
     }
 
     var buttonsHtml = new StringBuilder();
+    var pathBase = context.Request.PathBase.HasValue ? context.Request.PathBase.Value : "";
 
     if (buttonsToDisplay.Contains("army"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>");
     }
     if (buttonsToDisplay.Contains("edu"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>");
     }
     if (buttonsToDisplay.Contains("email"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>");
     }
     if (buttonsToDisplay.Contains("google"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='/login/google?redirect_uri={clientRedirectUri}'"">Log on with Google</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/google?redirect_uri={clientRedirectUri}'"">Log on with Google</button>");
     }
 
     context.Response.ContentType = "text/html";
@@ -205,6 +214,7 @@ app.MapGet("/login", async (HttpContext context) =>
 
 app.MapGet("/login/email", async (HttpContext context) =>
 {
+    var pathBase = context.Request.PathBase.HasValue ? context.Request.PathBase.Value : "";
     var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
     context.Response.ContentType = "text/html";
@@ -253,7 +263,7 @@ app.MapGet("/login/email", async (HttpContext context) =>
         <body>
             <h1>Email Login</h1>
             <div class=""form-container"">
-                <form method=""post"" action=""/login/email?redirect_uri={clientRedirectUri}"">
+                <form method=""post"" action=""{pathBase}/login/email?redirect_uri={clientRedirectUri}"">
                     <input type=""email"" name=""email"" placeholder=""Enter your email"" class=""input-field"" required />
                     <input type=""submit"" value=""Submit"" class=""btn"" />
                 </form>
@@ -314,30 +324,7 @@ app.MapGet("/setrefreshtoken", async (HttpContext context, ApplicationDbContext 
     context.Response.Cookies.Append("refreshToken", newRefreshToken.Token, cookieOptions);
 
     // Generate a new access token
-    var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
-    var jwtSettingsConfig = configuration.GetSection("JWTSettings");
-    var secretKey = jwtSettingsConfig["SecretKey"];
-    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
-
-    var claims = new List<Claim>
-    {
-        new Claim(JwtRegisteredClaimNames.Sub, appUser.Email),
-        new Claim(JwtRegisteredClaimNames.Email, appUser.Email),
-        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-        new Claim("custom:loggedInUsing", appUser.LoggedInUsing) // Custom claim
-    };
-
-    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-    var issuer = $"{context.Request.Scheme}://{context.Request.Host}";
-    var audience = "resource-server-1";
-
-    var jwtToken = new JwtSecurityToken(
-        issuer: issuer,
-        audience: audience,
-        claims: claims,
-        expires: DateTime.UtcNow.AddMinutes(60), // Short-lived access token
-        signingCredentials: creds
-    );
+    JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, appUser.Email, appUser.LoggedInUsing);
 
     var tokenString = new JwtSecurityTokenHandler().WriteToken(jwtToken);
 
@@ -349,109 +336,99 @@ app.MapGet("/setrefreshtoken", async (HttpContext context, ApplicationDbContext 
 
 app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _context) =>
 {
-    var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
-
-    // Get the email from the form
-    var form = await context.Request.ReadFormAsync();
-    var email = form["email"].ToString();
-
-    if (string.IsNullOrEmpty(email))
+    try
     {
-        context.Response.ContentType = "text/html";
-        await context.Response.WriteAsync("Please provide a valid email address.");
-        return;
-    }
+        var clientRedirectUri = context.Request.Query["redirect_uri"].ToString();
 
-    // Generate JWT token
-    var claims = new List<Claim>
-    {
-        new Claim(JwtRegisteredClaimNames.Sub, email),
-        new Claim(JwtRegisteredClaimNames.Email, email),
-        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-        new Claim("custom:loggedInUsing", "email")
-    };
+        // Get the email from the form
+        var form = await context.Request.ReadFormAsync();
+        var email = form["email"].ToString();
 
-    AppUser appUser = _context.AppUsers
-   .Where(x => x.Email == email && x.LoggedInUsing == "email")
-   .FirstOrDefault();
-
-    if (appUser == null)
-    {
-        AppUser newAppUser = new AppUser
+        if (string.IsNullOrEmpty(email))
         {
-            Email = email,
-            LoggedInUsing = "email"
+            context.Response.ContentType = "text/html";
+            await context.Response.WriteAsync("Please provide a valid email address.");
+            return;
+        }
+
+        AppUser appUser = _context.AppUsers
+            .Where(x => x.Email == email && x.LoggedInUsing == "email")
+            .FirstOrDefault();
+
+        if (appUser == null)
+        {
+            AppUser newAppUser = new AppUser
+            {
+                Email = email,
+                LoggedInUsing = "email"
+            };
+            _context.AppUsers.Add(newAppUser);
+            await _context.SaveChangesAsync();
+        }
+
+        JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, email, "email");
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var tokenString = tokenHandler.WriteToken(jwtToken);
+
+        // Create the email content
+        var serverUrl = $"{context.Request.Scheme}://{context.Request.Host}";
+        var redirectUri = $"{serverUrl}/callback/login/email?redirect_uri={clientRedirectUri}&token={tokenString}";
+
+        var emailContent = $@"
+            <p>Please click the link below to complete your login:</p>
+            <p><a href=""{redirectUri}"">{redirectUri}</a></p>
+        ";
+
+        // Prepare the email request
+        var emailRequest = new
+        {
+            recipients = new[] { email },
+            subject = "Your Login Link",
+            body = emailContent
         };
-        _context.AppUsers.Add(newAppUser);
-        _context.SaveChanges();
+
+        // Serialize the email request to JSON
+        var jsonContent = JsonSerializer.Serialize(emailRequest);
+
+        using var httpClient = new HttpClient();
+
+        // Add the X-API-KEY header
+        httpClient.DefaultRequestHeaders.Add("X-API-KEY", "DthdAd-JGC3XdvHOctzG6WTf7p6-eeJtXcqN4i8w7Yc");
+
+        // Send the email via POST request
+        var response = await httpClient.PostAsync(
+            "https://apps.armywarcollege.edu/registration/api/SendEmail",
+            new StringContent(jsonContent, Encoding.UTF8, "application/json")
+        );
+
+
+
+        if (response.IsSuccessStatusCode)
+        {
+            context.Response.ContentType = "text/html";
+            await context.Response.WriteAsync("An email has been sent to your address with the login link.");
+        }
+        else
+        {
+            context.Response.ContentType = "text/html";
+            await context.Response.WriteAsync($"Failed to send email. Status code: {response.StatusCode}");
+        }
     }
-
-
-
-
-    var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
-    var JWTSettingsConfig = configuration.GetSection("JWTSettings");
-
-    // JWT settings
-    var issuer = $"{context.Request.Scheme}://{context.Request.Host}";
-    var audience = "resource-server-1";
-    var secretKey = JWTSettingsConfig["SecretKey"];
-    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
-    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-    var expires = DateTime.UtcNow.AddMinutes(60);
-
-    // Create the JWT token
-    var token = new JwtSecurityToken(
-        issuer,
-        audience,
-        claims,
-        expires: expires,
-        signingCredentials: creds
-    );
-
-    var tokenHandler = new JwtSecurityTokenHandler();
-    var tokenString = tokenHandler.WriteToken(token);
-
-    // Create the email content
-    var serverUrl = $"{context.Request.Scheme}://{context.Request.Host}";
-    var redirectUri = $"{serverUrl}/callback/login/email?redirect_uri={clientRedirectUri}&token={tokenString}";
-
-    var emailContent = $@"
-        <p>Please click the link below to complete your login:</p>
-        <p><a href=""{redirectUri}"">{redirectUri}</a></p>
-    ";
-
-    // Prepare the email request
-    var emailRequest = new
+    catch (Exception ex)
     {
-        recipients = new[] { email },
-        subject = "Your Login Link",
-        body = emailContent
-    };
+        // Log the exception (optional)
+        Console.WriteLine($"Exception occurred: {ex.Message}");
 
-    // Serialize the email request to JSON
-    var jsonContent = JsonSerializer.Serialize(emailRequest);
-
-    using var httpClient = new HttpClient();
-
-    // Add the X-API-KEY header
-    httpClient.DefaultRequestHeaders.Add("X-API-KEY", "DthdAd-JGC3XdvHOctzG6WTf7p6-eeJtXcqN4i8w7Yc");
-
-    // Send the email via POST request
-    var response = await httpClient.PostAsync(
-        "https://apps.armywarcollege.edu/registration/api/SendEmail",
-        new StringContent(jsonContent, Encoding.UTF8, "application/json")
-    );
-
-    if (response.IsSuccessStatusCode)
-    {
+        // Write the exception details to the response
         context.Response.ContentType = "text/html";
-        await context.Response.WriteAsync("An email has been sent to your address with the login link.");
-    }
-    else
-    {
-        context.Response.ContentType = "text/html";
-        await context.Response.WriteAsync("Failed to send email. Please try again later.");
+        context.Response.StatusCode = 500; // Set the status code explicitly
+        await context.Response.WriteAsync($@"
+            <h1>500 Internal Server Error</h1>
+            <p>An error occurred while processing your request.</p>
+            <p><strong>Message:</strong> {ex.Message}</p>
+            <pre>{ex.StackTrace}</pre>
+        ");
     }
 });
 
@@ -606,39 +583,10 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context, Application
             return;
         }
 
-
-        // Define claims for the JWT token
-        var claims = new List<Claim>
-        {
-            new Claim(JwtRegisteredClaimNames.Sub, email),
-            new Claim(JwtRegisteredClaimNames.Email, email),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-            new Claim("custom:loggedInUsing", provider)
-        };
-
-
-
-        var JWTSettingsConfig = builder.Configuration.GetSection("JWTSettings");
-
-        // JWT settings
-        var issuer = $"{context.Request.Scheme}://{context.Request.Host}";
-        var audience = "resource-server-1";
-        var secretKey = JWTSettingsConfig["SecretKey"];
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var expires = DateTime.UtcNow.AddMinutes(60);
-
-        // Create the JWT token
-        var token = new JwtSecurityToken(
-            issuer,
-            audience,
-            claims,
-            expires: expires,
-            signingCredentials: creds
-        );
+        JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, email, provider);
 
         var tokenHandler = new JwtSecurityTokenHandler();
-        var tokenString = tokenHandler.WriteToken(token);
+        var tokenString = tokenHandler.WriteToken(jwtToken);
 
         // Retrieve the client-specified redirect URI from the login endpoint
         var clientRedirectUri = result.Properties?.Items["redirect_uri"];
