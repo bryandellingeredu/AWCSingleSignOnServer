@@ -16,7 +16,7 @@ namespace SSO2
             return new RefreshToken { Token = Convert.ToBase64String(randomNumber) };
         }
 
-        public static JwtSecurityToken GenerateAccessToken(HttpContext context, string email, string loggedInUsing) 
+        public static JwtSecurityToken GenerateAccessToken(HttpContext context, string email, string loggedInUsing, int personId) 
         {
             var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
             var jwtSettingsConfig = configuration.GetSection("JWTSettings");
@@ -28,7 +28,8 @@ namespace SSO2
               new Claim(JwtRegisteredClaimNames.Sub, email),
               new Claim(JwtRegisteredClaimNames.Email, email),
               new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-              new Claim("custom:loggedInUsing", loggedInUsing) // Custom claim
+              new Claim("custom:loggedInUsing", loggedInUsing), // Custom claim
+              new Claim("custom:personId", personId.ToString()) // Custom claim
             };
 
             var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

@@ -12,6 +12,7 @@ using SSO2;
 using System.Net.Sockets;
 using System.Net;
 using OpenIddict.Client;
+using Microsoft.Extensions.Caching.Memory;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -59,12 +60,14 @@ builder.Services.AddOpenIddict()
         options.AddEphemeralEncryptionKey();
         options.AddEphemeralSigningKey();
 
+        //  RedirectUri = new Uri("/SingleSignOn/callback/login/army", UriKind.Relative),
+        //   RedirectUri = new Uri("/callback/login/army", UriKind.Relative),
+
         options.AddRegistration(new OpenIddictClientRegistration
         {
             Issuer = new Uri(builder.Configuration["ArmyAzureAd:Authority"] ?? throw new InvalidOperationException("ArmyAzureAd:Authority is not configured.")),
             ClientId = builder.Configuration["ArmyAzureAd:ClientId"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientId is not configured."),
-            // I don't have a client secret
-           // ClientSecret = builder.Configuration["ArmyAzureAd:ClientSecret"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientSecret is not configured."),
+            ClientSecret = builder.Configuration["ArmyAzureAd:ClientSecret"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientSecret is not configured."),
             Scopes = { "openid", "profile", "email" },
             RedirectUri = new Uri("/SingleSignOn/callback/login/army", UriKind.Relative),
             ProviderName = "Army",
@@ -186,70 +189,101 @@ app.MapGet("/login", async (HttpContext context) =>
 
     if (buttonsToDisplay.Contains("army"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/army?redirect_uri={clientRedirectUri}'"">Log on Army</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""handleLogin(this, '{pathBase}/login/army?redirect_uri={clientRedirectUri}')"">Log on Army</button>");
     }
     if (buttonsToDisplay.Contains("edu"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/edu?redirect_uri={clientRedirectUri}'"">Log on EDU</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""handleLogin(this, '{pathBase}/login/edu?redirect_uri={clientRedirectUri}')"">Log on EDU</button>");
     }
     if (buttonsToDisplay.Contains("email"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/email?redirect_uri={clientRedirectUri}'"">Send Email Link</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""handleLogin(this, '{pathBase}/login/email?redirect_uri={clientRedirectUri}')"">Send Email Link</button>");
     }
     if (buttonsToDisplay.Contains("google"))
     {
-        buttonsHtml.Append($@"<button class=""btn"" onclick=""location.href='{pathBase}/login/google?redirect_uri={clientRedirectUri}'"">Log on with Google</button>");
+        buttonsHtml.Append($@"<button class=""btn"" onclick=""handleLogin(this, '{pathBase}/login/google?redirect_uri={clientRedirectUri}')"">Log on with Google</button>");
     }
 
     context.Response.ContentType = "text/html";
     await context.Response.WriteAsync($@"
-    <!DOCTYPE html>
-    <html lang=""en"">
-    <head>
-        <meta charset=""UTF-8"">
-        <title>ARMY WAR COLLEGE SINGLE SIGN ON SERVER</title>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background-color: #f0f2f5;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100vh;
-                margin: 0;
-            }}
-            h1 {{
-                color: #333;
-            }}
-            .button-container {{
-                margin-top: 20px;
-            }}
-            .btn {{
-                display: inline-block;
-                padding: 12px 24px;
-                margin: 10px;
-                font-size: 16px;
-                text-decoration: none;
-                color: #fff;
-                background-color: #007bff;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
-                transition: background-color 0.3s ease;
-            }}
-            .btn:hover {{
-                background-color: #0056b3;
-            }}
-        </style>
-    </head>
-    <body>
-        <h1>Army War College Single Sign-On Server</h1>
-        <div class=""button-container"">
-            {buttonsHtml}
-        </div>
-    </body>
-    </html>
+<!DOCTYPE html>
+<html lang=""en"">
+<head>
+    <meta charset=""UTF-8"">
+    <title>ARMY WAR COLLEGE SINGLE SIGN-ON SERVER</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }}
+        h1 {{
+            color: #333;
+        }}
+        .button-container {{
+            margin-top: 20px;
+        }}
+        .btn {{
+            display: inline-block;
+            padding: 12px 24px;
+            margin: 10px;
+            font-size: 16px;
+            text-decoration: none;
+            color: #fff;
+            background-color: #007bff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }}
+        .btn:hover {{
+            background-color: #0056b3;
+        }}
+        .btn:disabled {{
+            background-color: gray;
+            cursor: not-allowed;
+        }}
+        #spinner {{
+            display: none;
+            margin-top: 20px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }}
+        @keyframes spin {{
+            0% {{ transform: rotate(0deg); }}
+            100% {{ transform: rotate(360deg); }}
+        }}
+    </style>
+    <script>
+        function handleLogin(button, url) {{
+            // Disable all buttons
+            document.querySelectorAll('.btn').forEach(btn => btn.disabled = true);
+            
+            // Show spinner
+            document.getElementById('spinner').style.display = 'block';
+            
+            // Redirect to login
+            window.location.href = url;
+        }}
+    </script>
+</head>
+<body>
+    <h1>Army War College Single Sign-On Server</h1>
+    <div class=""button-container"">
+        {buttonsHtml.ToString().Replace("onclick=\"location.href=", "onclick=\"handleLogin(this, ")}
+    </div>
+    <div id=""spinner""></div>
+</body>
+</html>
 ");
 });
 
@@ -365,7 +399,14 @@ app.MapGet("/setrefreshtoken", async (HttpContext context, ApplicationDbContext 
     context.Response.Cookies.Append("refreshToken", newRefreshToken.Token, cookieOptions);
 
     // Generate a new access token
-    JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, appUser.Email, appUser.LoggedInUsing);
+    int personId = 0;
+    var usersDict = USAWCUserService.GetUSAWCUserDictionary(context, context.RequestServices.GetRequiredService<IMemoryCache>());
+
+    if (usersDict.TryGetValue(appUser.Email, out var user))
+    {
+        personId = user.PersonId;
+    }
+    JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, appUser.Email, appUser.LoggedInUsing, personId);
 
     var tokenString = new JwtSecurityTokenHandler().WriteToken(jwtToken);
 
@@ -407,7 +448,7 @@ app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _co
             await _context.SaveChangesAsync();
         }
 
-        JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, email, "email");
+        JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, email, "email", 0);
 
         var tokenHandler = new JwtSecurityTokenHandler();
         var tokenString = tokenHandler.WriteToken(jwtToken);
@@ -613,6 +654,7 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context, Application
     {
         var provider = context.Request.RouteValues["provider"]?.ToString()?.ToLower();
         string email;
+        int personId = 0;
         if (provider == "google")
         {
             // Google-specific claim for email
@@ -623,6 +665,12 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context, Application
         {
             // Standard claim for email
             email = result.Principal.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress");
+            var usersDict = USAWCUserService.GetUSAWCUserDictionary(context, context.RequestServices.GetRequiredService<IMemoryCache>());
+
+            if (usersDict.TryGetValue(email, out var user))
+            {
+                personId = user.PersonId;
+            }
         }
 
         if (email == null)
@@ -631,7 +679,7 @@ app.MapGet("/callback/login/{provider}", async (HttpContext context, Application
             return;
         }
 
-        JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, email, provider);
+        JwtSecurityToken jwtToken = UtilityClass.GenerateAccessToken(context, email, provider, personId);
 
         var tokenHandler = new JwtSecurityTokenHandler();
         var tokenString = tokenHandler.WriteToken(jwtToken);
