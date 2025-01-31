@@ -9,6 +9,9 @@ using OpenIddict.Client.AspNetCore;
 using OpenIddict.Abstractions;
 using System.Text.Json;
 using SSO2;
+using System.Net.Sockets;
+using System.Net;
+using OpenIddict.Client;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -56,15 +59,18 @@ builder.Services.AddOpenIddict()
         options.AddEphemeralEncryptionKey();
         options.AddEphemeralSigningKey();
 
+        options.AddRegistration(new OpenIddictClientRegistration
+        {
+            Issuer = new Uri(builder.Configuration["ArmyAzureAd:Authority"] ?? throw new InvalidOperationException("ArmyAzureAd:Authority is not configured.")),
+            ClientId = builder.Configuration["ArmyAzureAd:ClientId"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientId is not configured."),
+            // I don't have a client secret
+           // ClientSecret = builder.Configuration["ArmyAzureAd:ClientSecret"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientSecret is not configured."),
+            Scopes = { "openid", "profile", "email" },
+            RedirectUri = new Uri("/SingleSignOn/callback/login/army", UriKind.Relative),
+            ProviderName = "Army",
+        });
+
         options.UseWebProviders()
-            .AddMicrosoft(armyOptions =>
-            {
-                armyOptions.SetClientId(builder.Configuration["ArmyAzureAd:ClientId"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientId is not configured."))
-                           .SetClientSecret(builder.Configuration["ArmyAzureAd:ClientSecret"] ?? throw new InvalidOperationException("ArmyAzureAd:ClientSecret is not configured."))
-                           .SetTenant(builder.Configuration["ArmyAzureAd:TenantId"] ?? throw new InvalidOperationException("ArmyAzureAd:TenantId is not configured."))
-                           .SetRedirectUri("/SingleSignOn/callback/login/army")
-                           .SetProviderName("Army"); // Set the provider name here
-            })
             .AddMicrosoft(eduOptions =>
             {
                 eduOptions.SetClientId(builder.Configuration["EDUAzureAd:ClientId"] ?? throw new InvalidOperationException("EDUAzureAd:ClientId is not configured."))
@@ -88,6 +94,12 @@ builder.Services.AddOpenIddict()
         options.UseAspNetCore()
                .EnableRedirectionEndpointPassthrough()
                .EnablePostLogoutRedirectionEndpointPassthrough();
+      /*  options.AddEventHandler<OpenIddictClientEvents.PrepareAuthorizationRequestContext>(builder =>
+      builder.UseInlineHandler(context =>
+      {
+          context.Request.CodeChallengeMethod = OpenIddictConstants.CodeChallengeMethods.Sha256;
+          return default;
+      }));*/
     });
 
 builder.Services.AddCors(options =>
@@ -97,7 +109,7 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                "https://localhost:3000",
                "https://apps-dev.armywarcollege.edu",
-               "https://apps.armywarcollege.edu"
+               "https://app.armywarcollege.edu"
            ) // Specify the allowed origin
              .AllowAnyHeader() // Allow all headers
               .AllowAnyMethod() // Allow all HTTP methods
@@ -111,9 +123,38 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+
+
 app.UsePathBase("/SingleSignOnServer");
 
 app.UseCors("CorsPolicy");
+
+/*
+app.Use(async (context, next) =>
+{
+    var authority = builder.Configuration["ArmyAzureAd:Authority"];
+    Console.WriteLine($"Requesting OpenID Config: {authority}/.well-known/openid-configuration");
+
+    using var client = new HttpClient();
+    var response = await client.GetAsync($"{authority}/.well-known/openid-configuration");
+
+    if (!response.IsSuccessStatusCode)
+    {
+        Console.WriteLine($" Failed to retrieve OpenID config. Status: {response.StatusCode}");
+        string errorContent = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"Response: {errorContent}");
+    }
+    else
+    {
+        string content = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($" OpenID Config Response: {content}");
+    }
+
+    await next();
+});*/
+
+
+
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -391,14 +432,19 @@ app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _co
         // Serialize the email request to JSON
         var jsonContent = JsonSerializer.Serialize(emailRequest);
 
-        using var httpClient = new HttpClient();
+        //  using var httpClient = new HttpClient();
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (message, cert, chain, sslPolicyErrors) => true
+        };
+
+        using var httpClient = new HttpClient(handler);
 
         // Add the X-API-KEY header
         httpClient.DefaultRequestHeaders.Add("X-API-KEY", "DthdAd-JGC3XdvHOctzG6WTf7p6-eeJtXcqN4i8w7Yc");
-
         // Send the email via POST request
         var response = await httpClient.PostAsync(
-            "https://apps.armywarcollege.edu/registration/api/SendEmail",
+            "https://local.apps.armywarcollege.edu/registration/api/SendEmail",
             new StringContent(jsonContent, Encoding.UTF8, "application/json")
         );
 
@@ -413,6 +459,8 @@ app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _co
         {
             context.Response.ContentType = "text/html";
             await context.Response.WriteAsync($"Failed to send email. Status code: {response.StatusCode}");
+
+            
         }
     }
     catch (Exception ex)
