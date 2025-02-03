@@ -9,8 +9,6 @@ using OpenIddict.Client.AspNetCore;
 using OpenIddict.Abstractions;
 using System.Text.Json;
 using SSO2;
-using System.Net.Sockets;
-using System.Net;
 using OpenIddict.Client;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -462,47 +460,9 @@ app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _co
             <p><a href=""{redirectUri}"">{redirectUri}</a></p>
         ";
 
-        // Prepare the email request
-        var emailRequest = new
-        {
-            recipients = new[] { email },
-            subject = "Your Login Link",
-            body = emailContent
-        };
-
-        // Serialize the email request to JSON
-        var jsonContent = JsonSerializer.Serialize(emailRequest);
-
-        //  using var httpClient = new HttpClient();
-        var handler = new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = (message, cert, chain, sslPolicyErrors) => true
-        };
-
-        using var httpClient = new HttpClient(handler);
-
-        // Add the X-API-KEY header
-        httpClient.DefaultRequestHeaders.Add("X-API-KEY", "DthdAd-JGC3XdvHOctzG6WTf7p6-eeJtXcqN4i8w7Yc");
-        // Send the email via POST request
-        var response = await httpClient.PostAsync(
-            "https://local.apps.armywarcollege.edu/registration/api/SendEmail",
-            new StringContent(jsonContent, Encoding.UTF8, "application/json")
-        );
-
-
-
-        if (response.IsSuccessStatusCode)
-        {
-            context.Response.ContentType = "text/html";
-            await context.Response.WriteAsync("An email has been sent to your address with the login link.");
-        }
-        else
-        {
-            context.Response.ContentType = "text/html";
-            await context.Response.WriteAsync($"Failed to send email. Status code: {response.StatusCode}");
-
-            
-        }
+        await GraphHelperServices.SendEmail(context, "Your Login Link", emailContent, new[] { email });
+        await context.Response.WriteAsync("An email has been sent to your address with the login link.");
+    
     }
     catch (Exception ex)
     {
@@ -608,7 +568,7 @@ app.MapGet("/callback/login/email", async (HttpContext context, ApplicationDbCon
         context.Response.Cookies.Append("refreshToken", newRefreshToken.Token, cookieOptions);
         context.Response.Redirect(redirectUri);
     }
-    catch (Exception)
+    catch (Exception ex)
     {
         await context.Response.WriteAsync("Invalid or expired token.");
     }
