@@ -452,7 +452,7 @@ app.MapPost("/login/email", async (HttpContext context, ApplicationDbContext _co
         var tokenString = tokenHandler.WriteToken(jwtToken);
 
         // Create the email content
-        var serverUrl = $"{context.Request.Scheme}://{context.Request.Host}";
+        var serverUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}";
         var redirectUri = $"{serverUrl}/callback/login/email?redirect_uri={clientRedirectUri}&token={tokenString}";
 
         var emailContent = $@"
