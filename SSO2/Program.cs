@@ -519,7 +519,7 @@ app.MapGet("/callback/login/email", async (HttpContext context, ApplicationDbCon
         var principal = tokenHandler.ValidateToken(token, new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuer = $"{context.Request.Scheme}://{context.Request.Host}",
+            ValidIssuer = "https://apps.armywarcollege.edu/SingleSignOn",
             ValidateAudience = true,
             ValidAudience = "resource-server-1",
             ValidateIssuerSigningKey = true,
